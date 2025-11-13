@@ -1,9 +1,9 @@
-import os
 import csv
-import random
 import logging
-from pathlib import Path
+import os
+import random
 from collections import defaultdict
+from pathlib import Path
 
 os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
@@ -115,7 +115,7 @@ class MetadataOrganizer:
     def _assign_non_clones(self, suitable_problems, seed):
         """
         Assign non-clone problems (hard negatives) to each problem.
-        Each problem gets 10 non-clones (5 Java, 5 Python) from other problems.
+        Each problem gets 5 Python non-clones from other problems.
         """
         random.seed(seed)
         logging.info("Starting non-clone assignment")
@@ -127,13 +127,12 @@ class MetadataOrganizer:
             
             other_indices = [j for j in range(num_problems) if j != i]
             
-            if len(other_indices) < 10:
+            if len(other_indices) < 5:
                 logging.warning(f"Not enough other problems for {problem_id} (available: {len(other_indices)})")
                 selected_indices = other_indices
             else:
-                selected_indices = random.sample(other_indices, 10)
+                selected_indices = random.sample(other_indices, 5)
             
-            non_clone_java = []
             non_clone_python = []
             non_clone_problem_ids = []
             
@@ -142,27 +141,19 @@ class MetadataOrganizer:
                 other_problem_id = other_prob['problem_id']
                 non_clone_problem_ids.append(other_problem_id)
                 
-                if len(non_clone_java) < 5:
-                    java_subs = other_prob['submissions']['java_accepted']
-                    if java_subs:
-                        selected_java = random.choice(java_subs)
-                        selected_java['original_problem_id'] = other_problem_id
-                        non_clone_java.append(selected_java)
-                
                 if len(non_clone_python) < 5:
                     python_subs = other_prob['submissions']['python_accepted']
                     if python_subs:
-                        selected_python = random.choice(python_subs)
+                        selected_python = random.choice(python_subs).copy()
                         selected_python['original_problem_id'] = other_problem_id
                         non_clone_python.append(selected_python)
             
             prob_data['non_clones'] = {
-                'java': non_clone_java,
                 'python': non_clone_python,
                 'source_problem_ids': non_clone_problem_ids
             }
             
-            logging.info(f"{problem_id}: Assigned {len(non_clone_java)} Java and {len(non_clone_python)} Python non-clones from problems: {', '.join(non_clone_problem_ids)}")
+            logging.info(f"{problem_id}: Assigned {len(non_clone_python)} Python non-clones from problems: {', '.join(non_clone_problem_ids)}")
     
     def _read_metadata_file(self, metadata_file):
         """Read metadata CSV file and return list of submissions."""
@@ -190,27 +181,52 @@ class MetadataOrganizer:
             all_submissions = (
                 submissions['java_accepted'] +
                 submissions['python_accepted'] +
-                non_clones['java'] +
                 non_clones['python']
             )
             
             for sub in submissions['java_accepted'] + submissions['python_accepted']:
                 sub['clone_type'] = 'clone'
-                if 'original_problem_id' not in sub:
-                    sub['original_problem_id'] = problem_id
+                sub['original_problem_id'] = sub.get('problem_id', problem_id)
             
-            for sub in non_clones['java'] + non_clones['python']:
+            for sub in non_clones['python']:
                 sub['clone_type'] = 'non_clone'
+                sub['problem_id'] = problem_id
             
-            random.shuffle(all_submissions)
+            counters = defaultdict(int)
+            
+            for sub in all_submissions:
+                language = sub.get('language', '')
+                clone_type = sub.get('clone_type', '')
+                extension = sub.get('filename_ext', '')
+                
+                key = (language, clone_type)
+                counters[key] += 1
+                count = counters[key]
+                
+                new_filename = f"{problem_id}_{clone_type}_{count}.{extension}"
+                sub['filename'] = new_filename
+            
+            all_submissions.sort(key=lambda x: x.get('filename', ''))
             
             output_file = self.output_metadata_dir.joinpath(f"{problem_id}.csv")
             
             if all_submissions:
-                fieldnames = list(all_submissions[0].keys())
+                fieldnames = [
+                    'submission_id',
+                    'problem_id',
+                    'language',
+                    'filename_ext',
+                    'clone_type',
+                    'original_problem_id',
+                    'filename'
+                ]
                 
                 with open(output_file, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer = csv.DictWriter(
+                        f, 
+                        fieldnames=fieldnames,
+                        extrasaction='ignore'
+                    )
                     writer.writeheader()
                     writer.writerows(all_submissions)
                 
@@ -229,7 +245,6 @@ class MetadataOrganizer:
                 'problem_id',
                 'java_clones',
                 'python_clones',
-                'java_non_clones',
                 'python_non_clones',
                 'total_submissions',
                 'non_clone_source_problems'
@@ -244,13 +259,11 @@ class MetadataOrganizer:
                     problem_id,
                     len(submissions['java_accepted']),
                     len(submissions['python_accepted']),
-                    len(non_clones['java']),
                     len(non_clones['python']),
-                    len(submissions['java_accepted']) + len(submissions['python_accepted']) + 
-                    len(non_clones['java']) + len(non_clones['python']),
+                    len(submissions['java_accepted']) + len(submissions['python_accepted']) + len(non_clones['python']),
                     '; '.join(non_clones['source_problem_ids'])
                 ])
-        
+    
         logging.info(f"Summary report created with {len(suitable_problems)} problems")
     
     def __exit__(self, exception, _, __):

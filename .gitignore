@@ -209,3 +209,5 @@ __marimo__/
 dataset/
 preprocessed_dataset/
 logs/
+reports/
+.idea

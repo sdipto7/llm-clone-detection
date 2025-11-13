@@ -1,9 +1,9 @@
-import os
 import csv
-import shutil
 import logging
-from pathlib import Path
+import os
+import shutil
 from collections import defaultdict
+from pathlib import Path
 
 os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
@@ -108,8 +108,7 @@ class DatasetPreprocessor:
         return clones_copied, non_clones_copied
     
     def _copy_submissions(self, problem_id, submissions, target_dir, label):
-        """Copy submission files with new naming convention."""
-        lang_counters = defaultdict(int)
+        """Copy submission files using pre-generated filenames from metadata."""
         copied_count = 0
         
         for sub in submissions:
@@ -117,25 +116,18 @@ class DatasetPreprocessor:
             language = sub.get('language', '')
             extension = sub.get('filename_ext', '')
             original_problem_id = sub.get('original_problem_id', problem_id)
+            new_filename = sub.get('filename', '')
             
-            if not all([submission_id, language, extension]):
+            if not all([submission_id, language, extension, new_filename]):
                 logging.warning(f"{problem_id}: Missing metadata for submission")
                 continue
             
-            filename = f"{submission_id}.{extension}"
-            
-            source_file = self.source_data_dir.joinpath(original_problem_id, language, filename)
+            source_filename = f"{submission_id}.{extension}"
+            source_file = self.source_data_dir.joinpath(original_problem_id, language, source_filename)
             
             if not source_file.exists():
                 logging.warning(f"{problem_id}: Source file not found: {source_file}")
                 continue
-            
-            file_ext = source_file.suffix
-            
-            lang_counters[language] += 1
-            count = lang_counters[language]
-
-            new_filename = f"{problem_id}_{label}_{count}{file_ext}"
             
             target_file = target_dir.joinpath(new_filename)
             
@@ -144,8 +136,8 @@ class DatasetPreprocessor:
                 copied_count += 1
                 logging.debug(f"{problem_id}: Copied {source_file.name} -> {new_filename}")
             except Exception as e:
-                logging.error(f"{problem_id}: Failed to copy {filename}: {e}")
-        
+                logging.error(f"{problem_id}: Failed to copy {source_filename}: {e}")
+    
         return copied_count
     
     def _read_metadata_file(self, metadata_file):

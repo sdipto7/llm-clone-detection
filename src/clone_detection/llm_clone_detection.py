@@ -68,6 +68,7 @@ class LLMCloneDetector:
 
         self._initialize_llm_config(model)
         self._initialize_rate_limiting()
+        self._initialize_token_tracking()
 
         self.output_root = output_root.joinpath(self.resolve_model_name_for_path(self.model))
         self._initialize_problem_cache()
@@ -82,6 +83,13 @@ class LLMCloneDetector:
         """Initialize rate limiting for free models."""
         self.is_free_model = ":free" in self.model
         self.request_timestamps = deque()
+
+    def _initialize_token_tracking(self):
+        """Initialize token tracking."""
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
+        self.api_call_count = 0
 
     def _initialize_problem_cache(self):
         """Initialize problem-level cache directory."""
@@ -492,7 +500,7 @@ class LLMCloneDetector:
             filename: str
     ) -> str:
         """Generate algorithm description for code."""
-        logging.info(f"  Generating algorithm for {filename}...")
+        logging.info(f"Generating algorithm for {filename}...")
 
         conversation.append({
             "role": "user",
@@ -602,8 +610,8 @@ class LLMCloneDetector:
             logging.error(f"Error reading {metadata_file}: {e}")
             raise
 
-    def _generate_llm_response(self, messages: List[Dict], max_tokens: int = 100) -> str:
-        """Generate response from LLM with retry logic."""
+    def _generate_llm_response(self, messages: List[Dict], max_tokens: int = 1000) -> str:
+        """Generate response from LLM with retry logic and token tracking."""
         client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         attempts_remaining = MAX_RETRY_ATTEMPTS
 
@@ -617,6 +625,8 @@ class LLMCloneDetector:
                     temperature=0,
                     max_tokens=max_tokens
                 )
+                self._track_token_usage(response)
+                
                 return response.choices[0].message.content
 
             except Exception as e:
@@ -632,6 +642,28 @@ class LLMCloneDetector:
                         raise
 
         return "exceptional case"
+
+    def _track_token_usage(self, response):
+        """Track token usage from API response."""
+        try:
+            usage = response.usage
+            
+            prompt_tokens = usage.prompt_tokens
+            completion_tokens = usage.completion_tokens
+            total_tokens = usage.total_tokens
+            
+            self.total_prompt_tokens += prompt_tokens
+            self.total_completion_tokens += completion_tokens
+            self.total_tokens += total_tokens
+            self.api_call_count += 1
+            
+            logging.debug(
+                f"API call #{self.api_call_count}: "
+                f"Prompt={prompt_tokens}, Completion={completion_tokens}, Total={total_tokens}"
+            )
+            
+        except AttributeError as e:
+            logging.warning(f"Could not extract token usage from response: {e}")
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Check if error is a rate limit error."""
@@ -879,13 +911,45 @@ class LLMCloneDetector:
         confusion_matrix = self._calculate_confusion_matrix(results)
         overall_metrics = self._calculate_overall_metrics(confusion_matrix, total)
         per_label_metrics = self._calculate_per_label_metrics(results)
+        token_metrics = self._calculate_token_metrics()
 
         return {
             'detection_mode': self.detection_mode,
+            'model': self.model,
             'total_comparisons': total,
             **confusion_matrix,
             **overall_metrics,
-            **per_label_metrics
+            **per_label_metrics,
+            **token_metrics
+        }
+
+    def _calculate_token_metrics(self) -> Dict:
+        """Calculate token usage metrics."""
+        avg_tokens_per_call = (
+            round(self.total_tokens / self.api_call_count, 2) 
+            if self.api_call_count > 0 else 0
+        )
+        
+        avg_prompt_tokens = (
+            round(self.total_prompt_tokens / self.api_call_count, 2)
+            if self.api_call_count > 0 else 0
+        )
+        
+        avg_completion_tokens = (
+            round(self.total_completion_tokens / self.api_call_count, 2)
+            if self.api_call_count > 0 else 0
+        )
+        
+        return {
+            'token_usage': {
+                'total_api_calls': self.api_call_count,
+                'total_prompt_tokens': self.total_prompt_tokens,
+                'total_completion_tokens': self.total_completion_tokens,
+                'total_tokens': self.total_tokens,
+                'avg_tokens_per_api_call': avg_tokens_per_call,
+                'avg_prompt_tokens_per_call': avg_prompt_tokens,
+                'avg_completion_tokens_per_call': avg_completion_tokens
+            }
         }
 
     def _calculate_confusion_matrix(self, results: List[Dict]) -> Dict:
